@@ -9,6 +9,7 @@ configuration in ~/.hermes/config.yaml under the ``mcp_servers`` key.
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -275,6 +276,109 @@ def _unwrap_exception_group(exc: BaseException) -> Exception:
     if isinstance(exc, Exception):
         return exc
     return RuntimeError(str(exc))
+
+
+# ─── hermes mcp call ─────────────────────────────────────────────────────────
+
+def cmd_mcp_call(args):
+    """Call a specific tool on an MCP server and print the result.
+
+    Usage:
+        hermes mcp call <server> <tool> --args '{"key": "value"}'
+        hermes mcp call linkwarden linkwarden_list_links
+        hermes mcp call n8n n8n_workflow_run --args '{"workflow_id": "abc123"}'
+    """
+    server_name = args.server
+    tool_name = args.tool
+
+    # Parse JSON args
+    try:
+        tool_args = json.loads(args.args or "{}")
+    except (json.JSONDecodeError, TypeError) as exc:
+        _error(f"Invalid JSON in --args: {exc}")
+        _info("Pass a JSON object like '{\"key\": \"value\"}'")
+        return
+
+    servers = _get_mcp_servers()
+    if server_name not in servers:
+        _error(f"Server '{server_name}' not found in config.")
+        available = list(servers.keys())
+        if available:
+            _info(f"Available: {', '.join(available)}")
+        return
+
+    cfg = servers[server_name]
+
+    print()
+    print(color(f"  Connecting to '{server_name}'...", Colors.CYAN))
+
+    from tools.mcp_tool import (
+        _ensure_mcp_loop,
+        _run_on_mcp_loop,
+        _connect_server,
+        _stop_mcp_loop,
+    )
+
+    _ensure_mcp_loop()
+
+    call_result: Optional[str] = None
+    connect_start = time.monotonic()
+    elapsed_ms = 0.0
+
+    async def _do_call():
+        server = await asyncio.wait_for(
+            _connect_server(server_name, cfg), timeout=30
+        )
+        try:
+            async with server._rpc_lock:
+                result = await server.session.call_tool(tool_name, arguments=tool_args)
+
+            # Collect text from content blocks
+            parts: List[str] = []
+            for block in (result.content or []):
+                if hasattr(block, "text") and block.text:
+                    parts.append(block.text)
+                    continue
+                # Image blocks — cache and return MEDIA tag
+                image_tag = _cache_mcp_image_block(block)
+                if image_tag:
+                    parts.append(image_tag)
+            text_result = "\n".join(parts) if parts else ""
+
+            # Combine content + structuredContent when both present
+            structured = getattr(result, "structuredContent", None)
+            if structured is not None and text_result:
+                return json.dumps({
+                    "result": text_result,
+                    "structuredContent": structured,
+                }, ensure_ascii=False, indent=2)
+            if structured is not None:
+                return json.dumps({"result": structured}, ensure_ascii=False, indent=2)
+            if text_result:
+                return json.dumps({"result": text_result}, ensure_ascii=False, indent=2)
+            return json.dumps({"result": ""}, ensure_ascii=False, indent=2)
+        finally:
+            await server.shutdown()
+
+    try:
+        call_result = _run_on_mcp_loop(_do_call(), timeout=45)
+        elapsed_ms = (time.monotonic() - connect_start) * 1000
+    except asyncio.TimeoutError:
+        _error(f"Connection or tool call timed out ({elapsed_ms:.0f}ms)")
+        _stop_mcp_loop()
+        return
+    except BaseException as exc:
+        elapsed_ms = (time.monotonic() - connect_start) * 1000
+        _error(f"Failed ({elapsed_ms:.0f}ms): {_unwrap_exception_group(exc)}")
+        _stop_mcp_loop()
+        return
+
+    _success(f"Connected and called '{tool_name}' ({elapsed_ms:.0f}ms)")
+    print()
+    print(call_result)
+    print()
+
+    _stop_mcp_loop()
 
 
 # ─── hermes mcp add ──────────────────────────────────────────────────────────
@@ -864,6 +968,7 @@ def mcp_command(args):
         "configure": cmd_mcp_configure,
         "config": cmd_mcp_configure,
         "login": cmd_mcp_login,
+        "call": cmd_mcp_call,
     }
 
     handler = handlers.get(action)

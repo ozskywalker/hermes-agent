@@ -14895,6 +14895,19 @@ Examples:
     )
     mcp_login_p.add_argument("name", help="Server name to re-authenticate")
 
+    mcp_call_p = mcp_sub.add_parser(
+        "call",
+        help="Call a specific MCP server tool and print the result",
+    )
+    mcp_call_p.add_argument("server", help="MCP server name")
+    mcp_call_p.add_argument("tool", help="Tool name to call")
+    mcp_call_p.add_argument(
+        "--args",
+        type=str,
+        default="{}",
+        help="JSON string of arguments to pass to the tool (default: '{}')",
+    )
+
     # ── Catalog (Nous-approved MCPs shipped with the repo) ─────────────────
     mcp_sub.add_parser(
         "picker",
