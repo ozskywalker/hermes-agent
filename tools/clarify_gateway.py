@@ -122,12 +122,22 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
 
     deadline = time.monotonic() + max(timeout, 0.0)
     activity_state = {"last_touch": time.monotonic(), "start": time.monotonic()}
+    _interrupted = False
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
         if entry.event.wait(timeout=min(1.0, remaining)):
             break
+        # Check for agent interrupt — user signaled the agent to stop,
+        # so unblock immediately instead of waiting for the full timeout.
+        try:
+            from tools.interrupt import is_interrupted as _is_interrupted
+            if _is_interrupted():
+                _interrupted = True
+                break
+        except Exception:
+            pass
         if touch_activity_if_due is not None:
             touch_activity_if_due(activity_state, "waiting for user clarify response")
 
@@ -139,6 +149,10 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
             ids.remove(clarify_id)
             if not ids:
                 _session_index.pop(entry.session_key, None)
+
+    if _interrupted:
+        logger.info("Clarify wait interrupted for %s — unblocking agent interrupt detected", clarify_id)
+        return ""
 
     return entry.response
 
