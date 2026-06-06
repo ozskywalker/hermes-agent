@@ -5943,7 +5943,18 @@ def set_config_value(key: str, value: str):
         'GITHUB_TOKEN', 'HONCHO_API_KEY',
     ]
     
-    if key.upper() in api_keys or key.upper().endswith(('_API_KEY', '_TOKEN')) or key.upper().startswith('TERMINAL_SSH'):
+    # If the key contains dots, it's a nested YAML path — always use the
+    # YAML setter, even if it ends with _TOKEN or _API_KEY.  Without this
+    # guard a path like "mcp_servers.linkwarden.env.LINKWARDEN_API_TOKEN"
+    # would be misrouted to save_env_value(), which rejects dots in env
+    # var names.
+    is_nested = "." in key
+
+    if not is_nested and (
+        key.upper() in api_keys
+        or key.upper().endswith(('_API_KEY', '_TOKEN'))
+        or key.upper().startswith('TERMINAL_SSH')
+    ):
         save_env_value(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
         return
